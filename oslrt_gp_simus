@@ -1,0 +1,604 @@
+##Load functions##
+
+source("./oslrt_gp_functions.R")
+
+################################################################################
+##########################Simulations###########################################
+################################################################################
+
+###Null effect###
+#Parameters for the control group
+shape0 <- 1
+m0 <- 2
+scale0 <- m0/(-log(0.5))^(1/shape0)
+#Parameters for the experimental group
+shape1 <- 1
+m1 <- 2
+scale1 <- m1/(-log(0.5))^(1/shape1)
+
+set.seed(5)
+
+lambda_cens <- 0.07
+
+ta <- 3   #accrual time - 3 years
+tf <- 4   #follow-up time - 4 years
+
+nit <- 5000
+net <- 300
+
+ncont <- 100
+#ncont <- 35
+#ncont <- 50
+#ncont <- 200
+lambda_cont <- 0.07
+
+c <- 0.001
+#c <- 10
+#c <- 100
+
+L0 <- rweibull(n = ncont, shape = shape0, scale = scale0)
+#cens <- stats::rexp(n = ncont, lambda_cont)
+C0 <- L0 ##que censure administrative
+#C0 <- cens ##censure adm + cens perdus de vue
+C0[C0>7.0] <- 7.0
+D0 <- L0 <= C0
+L0 <- D0*L0 + (1-D0)*C0
+R0 <- L0
+R0[!D0] <- Inf
+sum(D0==FALSE)/length(D0)  #17% of censoring
+
+KM_cont <- survfit(Surv(L0, D0)~1)
+
+grid <- seq(0, 7, length = 1000)
+
+sample_cont <- GammaSampler$new(L = L0, R = R0, Tim = grid, size = 150, c = c)
+sample_cont$sample()
+
+##Survie##
+plot(KM_cont, conf.int = FALSE, xlab = 'Time', ylab = 'Survival',
+     ylim = c(0,1), main = 'Survival - c = 100')
+for(i in 1:ncol(sample_cont$Surv)){
+  lines(sample_cont$Tim, sample_cont$Surv[,i], type = 'l', col = 'grey')
+}
+lines(KM_cont, conf.int = FALSE)
+legend('topright', '0.9', c('KM control', 'Gamma process'),
+       col = c('black', 'grey'), lty = c(1, 1))
+
+##Risques cumules##
+plot(KM_cont, fun = 'cumhaz', conf.int = FALSE, xlab = 'Time', ylab = 'Cumulative hazard', 
+     ylim = c(0, 6), main = 'Cumulative hazard - c = 100')
+for(i in 1:ncol(sample_cont$H)){
+  lines(sample_cont$Tim, sample_cont$H[,i], type = 'l', col = 'grey')
+}
+lines(KM_cont, fun = 'cumhaz', conf.int = FALSE)
+legend('topleft', '0.9', c('KM control', 'Gamma process'),
+       col = c('black', 'grey'), lty = c(1, 1))
+
+
+patient <- c(20, 40, 100)
+patient2 <- c(60, 80)
+
+ncores <- 100
+cl <- makeCluster(ncores)
+clusterExport(cl, c("OSLRT", "mOSLRT", "generate_exp", "build_exp", "OSLRT_bayesian_unique", 
+                    "simulate_Z", "compute_pval"))
+registerDoParallel(cl)
+registerDoSNOW(cl)
+
+pb <- txtProgressBar(min = 0, max = nit * length(patient), style = 3)
+progress <- function(n) setTxtProgressBar(pb, n)
+opts <- list(progress = progress)
+
+res <- foreach(i = 1:nit, .combine = rbind, .options.snow = opts) %:%
+  foreach(n_pat = patient, .combine = rbind) %dopar%{
+    one_sim(i = i, nexp = n_pat, shape0 = shape0, scale0 = scale0,
+            sampling_cont = sample_cont, len = len, shape1 = shape1,
+            scale1 = scale1, CP = CP, ta = ta, tf = tf, lambda_cens = lambda_cens,
+            net = net)}
+
+close(pb)
+stopCluster(cl)
+
+head(res)
+
+res20 <- subset(res, n_pat == 20)
+res40 <- subset(res, n_pat == 40)
+res100 <- subset(res, n_pat == 100)
+
+ncores <- 100
+cl <- makeCluster(ncores)
+clusterExport(cl, c("OSLRT", "mOSLRT", "generate_exp", "build_exp", "OSLRT_bayesian_unique", 
+                    "simulate_Z", "compute_pval"))
+registerDoParallel(cl)
+registerDoSNOW(cl)
+
+pb <- txtProgressBar(min = 0, max = nit * length(patient2), style = 3)
+progress <- function(n) setTxtProgressBar(pb, n)
+opts <- list(progress = progress)
+
+res2 <- foreach(i = 1:nit, .combine = rbind, .options.snow = opts) %:%
+  foreach(n_pat = patient2, .combine = rbind) %dopar%
+  {one_sim(i = i, nexp = n_pat, shape0 = shape0, scale0 = scale0,
+           sampling_cont = sample_cont, len = len, shape1 = shape1,
+           scale1 = scale1, CP = CP, ta = ta, tf = tf, lambda_cens = lambda_cens, 
+           net = net)}
+
+close(pb)
+stopCluster(cl)
+
+head(res2)
+
+res60 <- subset(res2, n_pat == 60)
+res80 <- subset(res2, n_pat == 80)
+
+
+os20 <- sum(res20$err_oslrt)/nit
+mos20 <- sum(res20$err_moslrt)/nit
+bos20 <- sum(res20$err_bay_oslrt)/nit
+bmos20 <- sum(res20$err_bay_moslrt)/nit
+obs20 <- mean(res20$n_evts)
+
+os40 <- sum(res40$err_oslrt)/nit
+mos40 <- sum(res40$err_moslrt)/nit
+bos40 <- sum(res40$err_bay_oslrt)/nit
+bmos40 <- sum(res40$err_bay_moslrt)/nit
+obs40 <- mean(res40$n_evts)
+
+os60 <- sum(res60$err_oslrt)/nit
+mos60 <- sum(res60$err_moslrt)/nit
+bos60 <- sum(res60$err_bay_oslrt)/nit
+bmos60 <- sum(res60$err_bay_moslrt)/nit
+obs60 <- mean(res60$n_evts)
+
+os80 <- sum(res80$err_oslrt)/nit
+mos80 <- sum(res80$err_moslrt)/nit
+bos80 <- sum(res80$err_bay_oslrt)/nit
+bmos80 <- sum(res80$err_bay_moslrt)/nit
+obs80 <- mean(res80$n_evts)
+
+os100 <- sum(res100$err_oslrt)/nit
+mos100 <- sum(res100$err_moslrt)/nit
+bos100 <- sum(res100$err_bay_oslrt)/nit
+bmos100 <- sum(res100$err_bay_moslrt)/nit
+obs100 <- mean(res100$n_evts)
+
+n <- sort(c(patient, patient2))
+osl <- c(os20, os40, os60, os80, os100)
+mosl <- c(mos20, mos40, mos60, mos80, mos100)
+bosl <- c(bos20, bos40, bos60, bos80, bos100)
+bmosl <- c(bmos20, bmos40, bmos60, bmos80, bmos100)
+nevts <- c(round(obs20), round(obs40), round(obs60), round(obs80),
+           round(obs100))
+osl
+mosl
+bosl
+bmosl
+nevts
+
+d1 <- data.frame(Sample.size = n, Obs.evts = nevts, Error = c(osl, mosl, bosl, bmosl), 
+                 Test = c(rep('OSLRT', 5), rep('Modified OSLRT', 5), rep('Non-param Bayesian OSLRT', 5),
+                          rep('Non-param Bayesian mOSLRT', 5)))
+
+d1$Test <- as.factor(d1$Test)
+d1$Test <- factor(d1$Test, levels = c('OSLRT', 'Modified OSLRT', 'Non-param Bayesian OSLRT', 
+                                      'Non-param Bayesian mOSLRT'))
+
+ggplot(d1, aes(x = Sample.size, y = Error, group = Test))+
+  geom_line(aes(color = Test), size = 1)+
+  geom_point(aes(color = Test, shape = Test), size = 2)+
+  scale_x_continuous(name = 'Sample size', 
+                     sec.axis = sec_axis(trans = ~., name = 'Number of events', 
+                                         breaks = n, labels = d1$Obs.evts[1:5]))+
+  scale_shape_manual(values = c(18, 18, 18, 18))+
+  scale_color_manual(values = c('red', 'gold3', 'blue', 'green3'))+
+  labs(x = 'Sample size',
+       y = 'Power',
+       title = '',
+       subtitle = '')+
+  geom_hline(yintercept = 0.05, size = 0.2)+
+  ylim(0, 0.15)+
+  theme(axis.text.x.top = element_text(size = 8),
+        legend.position = 'bottom',
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(hjust = 0.5, size = 20),
+        plot.subtitle = element_text(hjust = 0.5, size = 15))
+
+
+###Proportional hazards (HR = 0.7)###
+#Parameters for the control group
+shape0 <- 1
+m0 <- 2
+scale0 <- m0/(-log(0.5))^(1/shape0)
+#Parameters for the experimental group
+shape1 <- 1
+m1 <- 2.84
+scale1 <- m1/(-log(0.5))^(1/shape1)
+
+set.seed(5)
+
+lambda_cens <- 0.04
+
+ta <- 3   #accrual time - 3 years
+tf <- 4   #follow-up time - 4 years
+
+nit <- 5000
+net <- 300
+
+ncont <- 100
+#ncont <- 35
+#ncont <- 50
+#ncont <- 200
+lambda_cont <- 0.07
+
+c <- 0.001
+#c <- 10
+#c <- 100
+
+L0 <- rweibull(n = ncont, shape = shape0, scale = scale0)
+#cens <- stats::rexp(n = ncont, lambda_cont)
+C0 <- L0 ##que censure administrative
+#C0 <- cens ##censure adm + cens perdus de vue
+C0[C0>7.0] <- 7.0
+D0 <- L0 <= C0
+L0 <- D0*L0 + (1-D0)*C0
+R0 <- L0
+R0[!D0] <- Inf
+sum(D0==FALSE)/length(D0)  #17% of censoring
+
+KM_cont <- survfit(Surv(L0, D0)~1)
+
+grid <- seq(0, 7, length = 1000)
+
+sample_cont <- GammaSampler$new(L = L0, R = R0, Tim = grid, size = 150, c = c)
+sample_cont$sample()
+
+##Survie##
+plot(KM_cont, conf.int = FALSE, xlab = 'Time', ylab = 'Survival',
+     ylim = c(0,1), main = 'Survival - c = 100')
+for(i in 1:ncol(sample_cont$Surv)){
+  lines(sample_cont$Tim, sample_cont$Surv[,i], type = 'l', col = 'grey')
+}
+lines(KM_cont, conf.int = FALSE)
+legend('topright', '0.9', c('KM control', 'Gamma process'),
+       col = c('black', 'grey'), lty = c(1, 1))
+
+##Risques cumules##
+plot(KM_cont, fun = 'cumhaz', conf.int = FALSE, xlab = 'Time', ylab = 'Cumulative hazard', 
+     ylim = c(0, 6), main = 'Cumulative hazard - c = 100')
+for(i in 1:ncol(sample_cont$H)){
+  lines(sample_cont$Tim, sample_cont$H[,i], type = 'l', col = 'grey')
+}
+lines(KM_cont, fun = 'cumhaz', conf.int = FALSE)
+legend('topleft', '0.9', c('KM control', 'Gamma process'),
+       col = c('black', 'grey'), lty = c(1, 1))
+
+
+patient <- c(20, 40, 100)
+patient2 <- c(60, 80)
+
+ncores <- 100
+cl <- makeCluster(ncores)
+clusterExport(cl, c("OSLRT", "mOSLRT", "generate_exp", "build_exp", "OSLRT_bayesian_unique", 
+                    "simulate_Z", "compute_pval"))
+registerDoParallel(cl)
+registerDoSNOW(cl)
+
+pb <- txtProgressBar(min = 0, max = nit * length(patient), style = 3)
+progress <- function(n) setTxtProgressBar(pb, n)
+opts <- list(progress = progress)
+
+res <- foreach(i = 1:nit, .combine = rbind, .options.snow = opts) %:%
+  foreach(n_pat = patient, .combine = rbind) %dopar%{
+    one_sim(i = i, nexp = n_pat, shape0 = shape0, scale0 = scale0,
+            sampling_cont = sample_cont, len = len, shape1 = shape1,
+            scale1 = scale1, CP = CP, ta = ta, tf = tf, lambda_cens = lambda_cens,
+            net = net)}
+
+close(pb)
+stopCluster(cl)
+
+head(res)
+
+res20 <- subset(res, n_pat == 20)
+res40 <- subset(res, n_pat == 40)
+res100 <- subset(res, n_pat == 100)
+
+ncores <- 100
+cl <- makeCluster(ncores)
+clusterExport(cl, c("OSLRT", "mOSLRT", "generate_exp", "build_exp", "OSLRT_bayesian_unique", 
+                    "simulate_Z", "compute_pval"))
+registerDoParallel(cl)
+registerDoSNOW(cl)
+
+pb <- txtProgressBar(min = 0, max = nit * length(patient2), style = 3)
+progress <- function(n) setTxtProgressBar(pb, n)
+opts <- list(progress = progress)
+
+res2 <- foreach(i = 1:nit, .combine = rbind, .options.snow = opts) %:%
+  foreach(n_pat = patient2, .combine = rbind) %dopar%
+  {one_sim(i = i, nexp = n_pat, shape0 = shape0, scale0 = scale0,
+           sampling_cont = sample_cont, len = len, shape1 = shape1,
+           scale1 = scale1, CP = CP, ta = ta, tf = tf, lambda_cens = lambda_cens, 
+           net = net)}
+
+close(pb)
+stopCluster(cl)
+
+head(res2)
+
+res60 <- subset(res2, n_pat == 60)
+res80 <- subset(res2, n_pat == 80)
+
+
+os20 <- sum(res20$err_oslrt)/nit
+mos20 <- sum(res20$err_moslrt)/nit
+bos20 <- sum(res20$err_bay_oslrt)/nit
+bmos20 <- sum(res20$err_bay_moslrt)/nit
+obs20 <- mean(res20$n_evts)
+
+os40 <- sum(res40$err_oslrt)/nit
+mos40 <- sum(res40$err_moslrt)/nit
+bos40 <- sum(res40$err_bay_oslrt)/nit
+bmos40 <- sum(res40$err_bay_moslrt)/nit
+obs40 <- mean(res40$n_evts)
+
+os60 <- sum(res60$err_oslrt)/nit
+mos60 <- sum(res60$err_moslrt)/nit
+bos60 <- sum(res60$err_bay_oslrt)/nit
+bmos60 <- sum(res60$err_bay_moslrt)/nit
+obs60 <- mean(res60$n_evts)
+
+os80 <- sum(res80$err_oslrt)/nit
+mos80 <- sum(res80$err_moslrt)/nit
+bos80 <- sum(res80$err_bay_oslrt)/nit
+bmos80 <- sum(res80$err_bay_moslrt)/nit
+obs80 <- mean(res80$n_evts)
+
+os100 <- sum(res100$err_oslrt)/nit
+mos100 <- sum(res100$err_moslrt)/nit
+bos100 <- sum(res100$err_bay_oslrt)/nit
+bmos100 <- sum(res100$err_bay_moslrt)/nit
+obs100 <- mean(res100$n_evts)
+
+n <- sort(c(patient, patient2))
+osl <- c(os20, os40, os60, os80, os100)
+mosl <- c(mos20, mos40, mos60, mos80, mos100)
+bosl <- c(bos20, bos40, bos60, bos80, bos100)
+bmosl <- c(bmos20, bmos40, bmos60, bmos80, bmos100)
+nevts <- c(round(obs20), round(obs40), round(obs60), round(obs80),
+           round(obs100))
+osl
+mosl
+bosl
+bmosl
+nevts
+
+d1 <- data.frame(Sample.size = n, Obs.evts = nevts, Error = c(osl, mosl, bosl, bmosl), 
+                 Test = c(rep('OSLRT', 5), rep('Modified OSLRT', 5), rep('Non-param Bayesian OSLRT', 5),
+                          rep('Non-param Bayesian mOSLRT', 5)))
+
+d1$Test <- as.factor(d1$Test)
+d1$Test <- factor(d1$Test, levels = c('OSLRT', 'Modified OSLRT', 'Non-param Bayesian OSLRT', 
+                                      'Non-param Bayesian mOSLRT'))
+
+ggplot(d1, aes(x = Sample.size, y = Error, group = Test))+
+  geom_line(aes(color = Test), size = 1)+
+  geom_point(aes(color = Test, shape = Test), size = 2)+
+  scale_shape_manual(values = c(18, 18, 18, 18))+
+  scale_x_continuous(name = 'Sample size', 
+                     sec.axis = sec_axis(trans = ~., name = 'Number of events', 
+                                         breaks = n, labels = d1$Obs.evts[1:5]))+
+  scale_color_manual(values = c('red', 'gold3', 'blue', 'green3'))+
+  labs(x = 'Sample size', 
+       y = 'Power',
+       title = '',
+       subtitle = '')+
+  geom_hline(yintercept = 0.8, size = 0.2)+
+  ylim(0,1)+
+  theme(axis.text.x.top = element_text(size = 8),
+        legend.position = 'bottom',
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(hjust = 0.5, size = 20),
+        plot.subtitle = element_text(hjust = 0.5, size = 15))
+
+
+###Proportional hazards (HR = 0.7)###
+#Parameters for the control group
+shape0 <- 1
+m0 <- 2
+scale0 <- m0/(-log(0.5))^(1/shape0)
+#Parameters for the experimental group
+shape1 <- 1
+m1 <- 4
+scale1 <- m1/(-log(0.5))^(1/shape1)
+
+set.seed(5)
+
+lambda_cens <- 0.03
+
+ta <- 3   #accrual time - 3 years
+tf <- 4   #follow-up time - 4 years
+
+nit <- 5000
+net <- 300
+
+ncont <- 100
+#ncont <- 35
+#ncont <- 50
+#ncont <- 200
+lambda_cont <- 0.07
+
+c <- 0.001
+#c <- 10
+#c <- 100
+
+L0 <- rweibull(n = ncont, shape = shape0, scale = scale0)
+#cens <- stats::rexp(n = ncont, lambda_cont)
+C0 <- L0 ##que censure administrative
+#C0 <- cens ##censure adm + cens perdus de vue
+C0[C0>7.0] <- 7.0
+D0 <- L0 <= C0
+L0 <- D0*L0 + (1-D0)*C0
+R0 <- L0
+R0[!D0] <- Inf
+sum(D0==FALSE)/length(D0)  #17% of censoring
+
+KM_cont <- survfit(Surv(L0, D0)~1)
+
+grid <- seq(0, 7, length = 1000)
+
+sample_cont <- GammaSampler$new(L = L0, R = R0, Tim = grid, size = 150, c = c)
+sample_cont$sample()
+
+##Survie##
+plot(KM_cont, conf.int = FALSE, xlab = 'Time', ylab = 'Survival',
+     ylim = c(0,1), main = 'Survival - c = 100')
+for(i in 1:ncol(sample_cont$Surv)){
+  lines(sample_cont$Tim, sample_cont$Surv[,i], type = 'l', col = 'grey')
+}
+lines(KM_cont, conf.int = FALSE)
+legend('topright', '0.9', c('KM control', 'Gamma process'),
+       col = c('black', 'grey'), lty = c(1, 1))
+
+##Risques cumules##
+plot(KM_cont, fun = 'cumhaz', conf.int = FALSE, xlab = 'Time', ylab = 'Cumulative hazard', 
+     ylim = c(0, 6), main = 'Cumulative hazard - c = 100')
+for(i in 1:ncol(sample_cont$H)){
+  lines(sample_cont$Tim, sample_cont$H[,i], type = 'l', col = 'grey')
+}
+lines(KM_cont, fun = 'cumhaz', conf.int = FALSE)
+legend('topleft', '0.9', c('KM control', 'Gamma process'),
+       col = c('black', 'grey'), lty = c(1, 1))
+
+
+patient <- c(20, 40, 100)
+patient2 <- c(60, 80)
+
+ncores <- 100
+cl <- makeCluster(ncores)
+clusterExport(cl, c("OSLRT", "mOSLRT", "generate_exp", "build_exp", "OSLRT_bayesian_unique", 
+                    "simulate_Z", "compute_pval"))
+registerDoParallel(cl)
+registerDoSNOW(cl)
+
+pb <- txtProgressBar(min = 0, max = nit * length(patient), style = 3)
+progress <- function(n) setTxtProgressBar(pb, n)
+opts <- list(progress = progress)
+
+res <- foreach(i = 1:nit, .combine = rbind, .options.snow = opts) %:%
+  foreach(n_pat = patient, .combine = rbind) %dopar%{
+    one_sim(i = i, nexp = n_pat, shape0 = shape0, scale0 = scale0,
+            sampling_cont = sample_cont, len = len, shape1 = shape1,
+            scale1 = scale1, CP = CP, ta = ta, tf = tf, lambda_cens = lambda_cens,
+            net = net)}
+
+close(pb)
+stopCluster(cl)
+
+head(res)
+
+res20 <- subset(res, n_pat == 20)
+res40 <- subset(res, n_pat == 40)
+res100 <- subset(res, n_pat == 100)
+
+ncores <- 100
+cl <- makeCluster(ncores)
+clusterExport(cl, c("OSLRT", "mOSLRT", "generate_exp", "build_exp", "OSLRT_bayesian_unique", 
+                    "simulate_Z", "compute_pval"))
+registerDoParallel(cl)
+registerDoSNOW(cl)
+
+pb <- txtProgressBar(min = 0, max = nit * length(patient2), style = 3)
+progress <- function(n) setTxtProgressBar(pb, n)
+opts <- list(progress = progress)
+
+res2 <- foreach(i = 1:nit, .combine = rbind, .options.snow = opts) %:%
+  foreach(n_pat = patient2, .combine = rbind) %dopar%
+  {one_sim(i = i, nexp = n_pat, shape0 = shape0, scale0 = scale0,
+           sampling_cont = sample_cont, len = len, shape1 = shape1,
+           scale1 = scale1, CP = CP, ta = ta, tf = tf, lambda_cens = lambda_cens, 
+           net = net)}
+
+close(pb)
+stopCluster(cl)
+
+head(res2)
+
+res60 <- subset(res2, n_pat == 60)
+res80 <- subset(res2, n_pat == 80)
+
+
+os20 <- sum(res20$err_oslrt)/nit
+mos20 <- sum(res20$err_moslrt)/nit
+bos20 <- sum(res20$err_bay_oslrt)/nit
+bmos20 <- sum(res20$err_bay_moslrt)/nit
+obs20 <- mean(res20$n_evts)
+
+os40 <- sum(res40$err_oslrt)/nit
+mos40 <- sum(res40$err_moslrt)/nit
+bos40 <- sum(res40$err_bay_oslrt)/nit
+bmos40 <- sum(res40$err_bay_moslrt)/nit
+obs40 <- mean(res40$n_evts)
+
+os60 <- sum(res60$err_oslrt)/nit
+mos60 <- sum(res60$err_moslrt)/nit
+bos60 <- sum(res60$err_bay_oslrt)/nit
+bmos60 <- sum(res60$err_bay_moslrt)/nit
+obs60 <- mean(res60$n_evts)
+
+os80 <- sum(res80$err_oslrt)/nit
+mos80 <- sum(res80$err_moslrt)/nit
+bos80 <- sum(res80$err_bay_oslrt)/nit
+bmos80 <- sum(res80$err_bay_moslrt)/nit
+obs80 <- mean(res80$n_evts)
+
+os100 <- sum(res100$err_oslrt)/nit
+mos100 <- sum(res100$err_moslrt)/nit
+bos100 <- sum(res100$err_bay_oslrt)/nit
+bmos100 <- sum(res100$err_bay_moslrt)/nit
+obs100 <- mean(res100$n_evts)
+
+n <- sort(c(patient, patient2))
+osl <- c(os20, os40, os60, os80, os100)
+mosl <- c(mos20, mos40, mos60, mos80, mos100)
+bosl <- c(bos20, bos40, bos60, bos80, bos100)
+bmosl <- c(bmos20, bmos40, bmos60, bmos80, bmos100)
+nevts <- c(round(obs20), round(obs40), round(obs60), round(obs80),
+           round(obs100))
+osl
+mosl
+bosl
+bmosl
+nevts
+
+d1 <- data.frame(Sample.size = n, Obs.evts = nevts, Error = c(osl, mosl, bosl, bmosl), 
+                 Test = c(rep('OSLRT', 5), rep('Modified OSLRT', 5), rep('Non-param Bayesian OSLRT', 5),
+                          rep('Non-param Bayesian mOSLRT', 5)))
+
+d1$Test <- as.factor(d1$Test)
+d1$Test <- factor(d1$Test, levels = c('OSLRT', 'Modified OSLRT', 'Non-param Bayesian OSLRT', 
+                                      'Non-param Bayesian mOSLRT'))
+
+ggplot(d1, aes(x = Sample.size, y = Error, group = Test))+
+  geom_line(aes(color = Test), size = 1)+
+  geom_point(aes(color = Test, shape = Test), size = 2)+
+  scale_shape_manual(values = c(18, 18, 18, 18))+
+  scale_x_continuous(name = 'Sample size', 
+                     sec.axis = sec_axis(trans = ~., name = 'Number of events', 
+                                         breaks = n, labels = d1$Obs.evts[1:5]))+
+  scale_color_manual(values = c('red', 'gold3', 'blue', 'green3'))+
+  labs(x = 'Sample size', 
+       y = 'Power',
+       title = '',
+       subtitle = '')+
+  geom_hline(yintercept = 0.8, size = 0.2)+
+  ylim(0,1)+
+  theme(axis.text.x.top = element_text(size = 8),
+        legend.position = 'bottom',
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(hjust = 0.5, size = 20),
+        plot.subtitle = element_text(hjust = 0.5, size = 15))
+
